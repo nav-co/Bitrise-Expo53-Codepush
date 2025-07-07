@@ -78,7 +78,7 @@ export default ({ config }) => {
       },
       plugins: [
         [
-        "./codepush-plugin.js", // Path to your custom CodePush plugin
+        "@code-push-next/react-native-code-push/expo", // CodePush plugin
           {
             ios: {
                 // Use the environment variable for the iOS CodePush Deployment Key
