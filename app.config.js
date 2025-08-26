@@ -83,12 +83,12 @@ export default ({ config }) => {
             ios: {
                 // Use the environment variable for the iOS CodePush Deployment Key
                 CodePushDeploymentKey: IOS_CODEPUSH_DEPLOYMENT_KEY || "YOUR_IOS_FALLBACK_KEY_IF_ANY", // Fallback is optional
-                CodePushServerURL: "https://codepush.bitrise.io" 
+                CodePushServerURL: "https://c8e286a505ee7c81.codepush.bitrise.io" 
             },
             android: {
                 // Use the environment variable for the Android CodePush Deployment Key
                 CodePushDeploymentKey: ANDROID_CODEPUSH_DEPLOYMENT_KEY || "YOUR_ANDROID_FALLBACK_KEY_IF_ANY", // Fallback is optional
-                CodePushServerURL: "https://codepush.bitrise.io" 
+                CodePushServerURL: "https://c8e286a505ee7c81.codepush.bitrise.io" 
             }
           }
         ],
