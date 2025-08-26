@@ -152,7 +152,7 @@ function App() {
     <View style={styles.container}>
       <StatusBar style="auto" />
       <Text style={styles.title}>My To-Dos</Text>
-      <Text style={styles.codepushInfoText}>CodePush Integrated Expo App v1.2.5</Text>
+      <Text style={styles.codepushInfoText}>CodePush Integrated Expo App v1.2.6</Text>
       <View style={styles.inputContainer}>
         <TextInput
           style={styles.input}
