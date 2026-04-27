@@ -82,7 +82,7 @@ jobs:
       - name: Build iOS Simulator
         run: |
           bitrise-build-cache react-native run \
-            npx expo run:ios --configuration Release --no-install
+            npx expo run:ios --configuration Release --device generic --no-bundler
 
       # ---------------------------------------------------------------
       # 9. Upload .app artifact
