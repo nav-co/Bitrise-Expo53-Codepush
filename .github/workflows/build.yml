@@ -24,8 +24,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Activate Bitrise Build Cache for React Native
         env:
-          BITRISE_BUILD_CACHE_AUTH_TOKEN: ${{ secrets.BITRISE_BUILD_CACHE_AUTH_TOKEN }}
-          BITRISE_BUILD_CACHE_WORKSPACE_ID: ${{ secrets.BITRISE_BUILD_CACHE_WORKSPACE_ID }}
+          BITRISE_BUILD_CACHE_AUTH_TOKEN: ${{ secrets.BITRISE_PAT }}
+          BITRISE_BUILD_CACHE_WORKSPACE_ID: ${{ secrets.BITRISE_WORKSPACE_ID }}
         run: |
           set -euxo pipefail
           curl --retry 5 -sSfL \
@@ -80,9 +80,6 @@ jobs:
       #    ccache is active and cache analytics are tracked.
       # ---------------------------------------------------------------
       - name: Build iOS Simulator
-        env:
-          BITRISE_BUILD_CACHE_AUTH_TOKEN: ${{ secrets.BITRISE_PAT }}
-          BITRISE_BUILD_CACHE_WORKSPACE_ID: ${{ secrets.BITRISE_WORKSPACE_ID }}
         run: |
           bitrise-build-cache react-native run \
             npx expo run:ios --configuration Release --no-install
