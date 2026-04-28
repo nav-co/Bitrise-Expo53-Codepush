@@ -82,7 +82,6 @@ jobs:
       # ---------------------------------------------------------------
       - name: Build iOS Simulator
         run: |
-          bitrise-build-cache react-native run \
             npx expo run:ios --configuration Release --no-install --no-bundler || true
 
       # ---------------------------------------------------------------
