@@ -1,0 +1,106 @@
+name: iOS Simulator Build without RN Build Cache
+
+on:
+  # Adjust triggers to match your needs
+  workflow_dispatch:
+
+jobs:
+  ios-simulator:
+    # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
+    runs-on:
+      group: Bitrise-M4Pro
+
+    steps:
+      # ---------------------------------------------------------------
+      # 1. Checkout
+      # ---------------------------------------------------------------
+      - name: Git Clone
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------
+      # 2. Activate Bitrise Build Cache for React Native
+      #    Must run BEFORE any native build command.
+      #    Downloads the CLI and enables Xcode + ccache caching.
+      # ---------------------------------------------------------------
+      - name: Activate Bitrise Build Cache for React Native
+        if: false
+        env:
+          BITRISE_BUILD_CACHE_AUTH_TOKEN: ${{ secrets.BITRISE_PAT }}
+          BITRISE_BUILD_CACHE_WORKSPACE_ID: ${{ secrets.BITRISE_WORKSPACE_ID }}
+        run: |
+          set -euxo pipefail
+          curl --retry 5 -sSfL \
+            'https://raw.githubusercontent.com/bitrise-io/bitrise-build-cache-cli/main/install/installer.sh' \
+            | sh -s -- -b /tmp/bin -d
+          /tmp/bin/bitrise-build-cache activate react-native
+
+      # ---------------------------------------------------------------
+      # 3. Restore npm cache
+      # ---------------------------------------------------------------
+      - name: Restore npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      # ---------------------------------------------------------------
+      # 4. npm install
+      # ---------------------------------------------------------------
+      - name: npm install
+        run: npm install
+
+      # ---------------------------------------------------------------
+      # 5. Expo prebuild
+      # ---------------------------------------------------------------
+      - name: Expo prebuild
+        run: npx expo prebuild
+
+      # ---------------------------------------------------------------
+      # 6. Restore CocoaPods cache
+      # ---------------------------------------------------------------
+      - name: Restore CocoaPods cache
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      # ---------------------------------------------------------------
+      # 7. CocoaPods install
+      # ---------------------------------------------------------------
+      - name: CocoaPods install
+        working-directory: ios
+        run: pod install
+
+      # ---------------------------------------------------------------
+      # 8. Build for iOS Simulator (wrapped with build cache CLI)
+      #    The `bitrise-build-cache react-native run` wrapper ensures
+      #    ccache is active and cache analytics are tracked.
+      # ---------------------------------------------------------------
+      - name: Build iOS Simulator
+        run: |
+          bitrise-build-cache react-native run \
+            npx expo run:ios --configuration Release --no-install --no-bundler || true
+
+      # ---------------------------------------------------------------
+      # 9. Verify build output exists and upload artifact
+      # ---------------------------------------------------------------
+      - name: Collect .app artifact
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "BitriseExpo53Codepush.app" -path "*/Release-iphonesimulator/*" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app not found in DerivedData"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+          mkdir -p ./build
+          cp -R "$APP_PATH" ./build/
+ 
+      - name: Upload Simulator Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: ./build/*.app
