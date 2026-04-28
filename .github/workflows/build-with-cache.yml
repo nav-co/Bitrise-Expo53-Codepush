@@ -1,4 +1,4 @@
-name: iOS Simulator Build
+name: iOS Simulator Build with RN Build Cache
 
 on:
   # Adjust triggers to match your needs
