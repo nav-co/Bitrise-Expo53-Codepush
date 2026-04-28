@@ -85,10 +85,21 @@ jobs:
             npx expo run:ios --configuration Release --no-install --no-bundler || true
 
       # ---------------------------------------------------------------
-      # 9. Upload .app artifact
+      # 9. Verify build output exists and upload artifact
       # ---------------------------------------------------------------
+      - name: Collect .app artifact
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "BitriseExpo53Codepush.app" -path "*/Release-iphonesimulator/*" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app not found in DerivedData"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+          mkdir -p ./build
+          cp -R "$APP_PATH" ./build/
+ 
       - name: Upload Simulator Build
         uses: actions/upload-artifact@v4
         with:
           name: ios-simulator-app
-          path: ios/build/Build/Products/Release-iphonesimulator/*.app
+          path: ./build/*.app
