@@ -8,7 +8,6 @@ jobs:
   ios-simulator:
     # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
     runs-on:
-      #group: Bitrise-M4Pro
       labels: [bitrise_pool_name:Bitrise-M4Pro-GHApp]
 
     steps:
