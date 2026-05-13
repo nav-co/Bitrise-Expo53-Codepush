@@ -55,7 +55,9 @@ export default ({ config }) => {
       userInterfaceStyle: "light",
       newArchEnabled: true, // Corresponds to newArchEnabled in app.json
       extra: {
-        projectId: "2bd88ea8-7242-4d4f-9d0c-50a61d96f017"
+        eas: {
+          projectId: "2bd88ea8-7242-4d4f-9d0c-50a61d96f017"
+        }
       },
       splash: {
         image: "./assets/splash-icon.png",
