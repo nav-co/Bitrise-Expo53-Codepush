@@ -69,8 +69,7 @@ jobs:
       - name: EAS Build (iOS Simulator, local)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          # Keep the EAS working dir around so we can grab Xcode logs on failure
-          EAS_LOCAL_BUILD_SKIP_CLEANUP: "1"
+          EAS_LOCAL_BUILD_WORKINGDIR: /Users/vagrant/build
         run: |
           set -euxo pipefail
           bitrise-build-cache react-native run \
