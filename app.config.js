@@ -48,7 +48,7 @@ export default ({ config }) => {
 
     expo: {
       name: "Bitrise-Expo53-Codepush",
-      slug: "Bitrise-Expo53-Codepush",
+      slug: "expo-53",
       version: "1.2.6", // You might want to manage this dynamically or keep it static
       orientation: "portrait",
       icon: "./assets/icon.png",
