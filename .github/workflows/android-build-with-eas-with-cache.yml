@@ -16,6 +16,12 @@ jobs:
         shell: bash
 
     steps:
+
+      - name: Setup environment
+        run: |
+          cp /root/.tool-versions "$HOME/.tool-versions"
+          git config --global --add safe.directory '*'
+          
       # ---------------------------------------------------------------
       # 1. Checkout
       # ---------------------------------------------------------------
