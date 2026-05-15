@@ -44,6 +44,12 @@ jobs:
             | sh -s -- -b /tmp/bin -d
           /tmp/bin/bitrise-build-cache activate react-native
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
       # ---------------------------------------------------------------
       # 3. Restore npm cache
       # ---------------------------------------------------------------
@@ -57,13 +63,6 @@ jobs:
 
       # ---------------------------------------------------------------
       # 4. npm install
-      # ---------------------------------------------------------------
-      - name: npm install
-        run: npm install
-
-      # ---------------------------------------------------------------
-      # 4. npm install (includes eas-cli if listed as devDependency;
-      #    otherwise install it globally below)
       # ---------------------------------------------------------------
       - name: npm install
         run: npm install
