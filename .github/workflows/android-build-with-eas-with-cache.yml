@@ -9,6 +9,8 @@ jobs:
     # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
     runs-on:
       labels: [bitrise_pool_name:Linux-XL]
+    container:
+      image: bitriseio/ubuntu-noble-24.04-bitrise-2025-android:latest
 
     steps:
       # ---------------------------------------------------------------
