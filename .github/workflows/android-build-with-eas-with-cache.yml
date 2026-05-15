@@ -1,4 +1,4 @@
-name: simulator Build with EAS + RN Build Cache
+name: android Build with EAS + RN Build Cache
 
 on:
   # Adjust triggers to match your needs
