@@ -167,7 +167,7 @@ jobs:
       - name: EAS Build (android Simulator, local)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          EAS_LOCAL_BUILD_WORKINGDIR: /Users/vagrant/build
+          EAS_LOCAL_BUILD_WORKINGDIR: /root/build
         run: |
           set -euxo pipefail
           bitrise-build-cache react-native run \
