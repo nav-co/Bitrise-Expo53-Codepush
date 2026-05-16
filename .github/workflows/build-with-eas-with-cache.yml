@@ -3,13 +3,23 @@ name: simulator Build with EAS + RN Build Cache
 on:
   # Adjust triggers to match your needs
   workflow_dispatch:
+    inputs:
+      chosen_job:
+        description: 'Select which job configuration to execute'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - ios
+          - android
+          - both
 
 jobs:
   ios-simulator-eas-cache:
     # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
     runs-on:
       labels: [bitrise_pool_name:Bitrise-M4Pro-GHApp]
-
+    if: ${{ github.event.inputs.chosen_job == 'ios' || github.event.inputs.chosen_job == 'both' }}
     steps:
       # ---------------------------------------------------------------
       # 1. Checkout
@@ -90,7 +100,7 @@ jobs:
     # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
     runs-on:
       labels: [bitrise_pool_name:Bitrise-M4Pro-GHApp]
-
+    if: ${{ github.event.inputs.chosen_job == 'android' || github.event.inputs.chosen_job == 'both' }}
     steps:
       # ---------------------------------------------------------------
       # 1. Checkout
@@ -147,7 +157,7 @@ jobs:
       #   - eas.json with a profile that sets ios.simulator: true
       #   - EXPO_TOKEN secret (from expo.dev → Access Tokens)
       # ---------------------------------------------------------------
-      - name: EAS Build (iOS Simulator, local)
+      - name: EAS Build (android Simulator, local)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_LOCAL_BUILD_WORKINGDIR: /Users/vagrant/build
