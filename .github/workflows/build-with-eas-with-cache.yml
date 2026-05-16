@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euxo pipefail
           # Or use setup-go action if you prefer
-          git clone --depth 1 -b fork/skip-gradle-benchmark \
+          git clone --depth 1 -b main \
             https://github.com/naveen-bitrise/bitrise-build-cache-cli.git /tmp/bbc
           cd /tmp/bbc
           mkdir -p /tmp/bin
