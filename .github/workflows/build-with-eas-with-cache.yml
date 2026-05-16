@@ -108,6 +108,16 @@ jobs:
       - name: Git Clone
         uses: actions/checkout@v4
 
+      - name: Build patched Bitrise Build Cache CLI
+        run: |
+          set -euxo pipefail
+          # Or use setup-go action if you prefer
+          git clone --depth 1 -b fork/skip-gradle-benchmark \
+            https://github.com/naveen-bitirse/bitrise-build-cache-cli.git /tmp/bbc
+          cd /tmp/bbc
+          mkdir -p /tmp/bin
+          go build -o /tmp/bin/bitrise-build-cache .
+
       # ---------------------------------------------------------------
       # 2. Activate Bitrise Build Cache for React Native
       #    Must run BEFORE any native build command.
