@@ -58,6 +58,7 @@ jobs:
       # ---------------------------------------------------------------
       - name: Restore npm cache
         uses: actions/cache@v4
+        if: ${{ github.event.inputs.git_clean == 'true'}}
         with:
           path: ~/.npm
           key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -66,13 +67,6 @@ jobs:
 
       # ---------------------------------------------------------------
       # 4. npm install
-      # ---------------------------------------------------------------
-      - name: npm install
-        run: npm install
-
-      # ---------------------------------------------------------------
-      # 4. npm install (includes eas-cli if listed as devDependency;
-      #    otherwise install it globally below)
       # ---------------------------------------------------------------
       - name: npm install
         run: npm install
