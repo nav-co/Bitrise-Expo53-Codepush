@@ -13,6 +13,14 @@ on:
           - ios
           - android
           - both
+      git_clean:
+        description: 'git clone with clean?'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - true
+          - false
 
 jobs:
   ios-simulator-eas-cache:
@@ -27,7 +35,7 @@ jobs:
       - name: Git Clone
         uses: actions/checkout@v4
         with:
-          clean: false
+          clean: ${{ github.event.inputs.git_clean == 'true'}}
 
       # ---------------------------------------------------------------
       # 2. Activate Bitrise Build Cache for React Native
