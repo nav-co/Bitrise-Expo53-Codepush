@@ -26,6 +26,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Git Clone
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       # ---------------------------------------------------------------
       # 2. Activate Bitrise Build Cache for React Native
