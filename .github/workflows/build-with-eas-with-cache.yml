@@ -26,7 +26,7 @@ jobs:
   ios-simulator-eas-cache:
     # Bitrise Runner (macOS) — update the label to match your self-hosted runner config
     runs-on:
-      labels: [bitrise_pool_name:Bitrise-M4Pro-GHApp]
+      labels: [bitrise_pool_name:Bitrise-M4Pro-GHApp, machine_debug_type:enabled]
     if: ${{ github.event.inputs.chosen_job == 'ios' || github.event.inputs.chosen_job == 'both' }}
     steps:
       # ---------------------------------------------------------------
