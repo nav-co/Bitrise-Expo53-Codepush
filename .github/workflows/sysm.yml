@@ -1,22 +1,20 @@
 name: symx I/O throttle repro
 
-# Self-contained reproduction of the symx macOS slowdown, run as a GHA JOB (so it
-# inherits the runner service's I/O policy). Findings so far: the in-job extract is
-# ~141s on a busy host but ~11s on a quiet one — i.e. INTERMITTENT. That matches
-# macOS I/O throttling, which only slows a throttled process when something else is
-# contending for disk I/O. This workflow:
-#   - reads the runner service's launchd QoS (the suspected inherited policy)
-#   - runs N extracts back-to-back to expose the variance, auto-spindumping any slow one
-#   - optionally INDUCES disk-I/O contention to force the slow path deterministically
-# No Sentry secrets / GCS — pulls public IPSWs.
+# Faithful reproduction of symx's SLOW step, run as a GHA job (inherits the runner
+# service's I/O policy). Prior runs showed: in-job timing is intermittent (11s vs
+# 141s) and `ipsw extract --dyld` is CPU-bound on AEA decrypt — NOT symx's slow path.
+# symx's actual slow step is `ipsw mount sys` + symsorter reading the whole mounted
+# volume (symsorter sat in uninterruptible I/O wait, CPU idle). So THIS reproduces
+# that exact pair and samples the stuck symsorter.
+#
+# IMPORTANT: only ever spindump a SPECIFIC pid — a whole-system spindump suspends
+# the runner agent and gets the job SIGTERM'd (exit 143). No Sentry secrets / GCS.
 
 on:
   workflow_dispatch:
     inputs:
-      mac_version:        { description: "macOS IPSW version", type: string, default: "26.5" }
-      iterations:         { description: "how many extracts to run", type: string, default: "6" }
-      induce_contention:  { description: "run a parallel disk-I/O load to force the slow path", type: boolean, default: false }
-      ipsw_version:       { description: "blacktop ipsw version", type: string, default: "3.1.685" }
+      mac_version: { description: "macOS IPSW version", type: string, default: "26.5" }
+      ipsw_version: { description: "blacktop ipsw version", type: string, default: "3.1.685" }
 
 permissions:
   contents: read
@@ -27,31 +25,34 @@ jobs:
     runs-on:
       labels: [bitrise_pool_name:Bitrise-M4Pro, machine_debug_type:enabled]
     steps:
-      - name: Environment + runner QoS
+      - name: Environment + who launched the runner (QoS source)
         run: |
-          echo "runner=$(hostname)  os=$(sw_vers -productVersion)  cores=$(sysctl -n hw.ncpu)  mem=$(( $(sysctl -n hw.memsize)/1024/1024 ))MiB  model=$(sysctl -n hw.model)"
-          echo "::group::find the GHA runner service + its launchd QoS / I/O policy"
-          # the runner's listener process tells us the install dir + lets us walk to the service
-          ps -axo pid,ppid,pri,nice,command | grep -iE 'Runner.Listener|actions-runner|run-helper|[r]un.sh' | grep -v grep | head
-          echo "--- launchctl services matching runner/actions/bitrise ---"
-          sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise' || launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise' || echo "(none matched)"
-          # try to print the service config for any match
-          for lbl in $(sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise' | awk '{print $3}'); do
-            echo "--- launchctl print system/$lbl ---"
-            sudo launchctl print "system/$lbl" 2>/dev/null | grep -iE 'state =|program|arguments|nice|priority|qos|processtype|iopolicy|throttl|inherited' | head -20
+          set +e
+          echo "runner=$(hostname) os=$(sw_vers -productVersion) cores=$(sysctl -n hw.ncpu) mem=$(( $(sysctl -n hw.memsize)/1024/1024 ))MiB model=$(sysctl -n hw.model)"
+          echo "::group::runner process parent chain (QoS is inherited down this chain)"
+          pid=$(pgrep -f 'Runner.Listener run' | head -1)
+          while [ -n "$pid" ] && [ "$pid" != 1 ]; do
+            line=$(ps -o pid,ppid,pri,nice,comm -p "$pid" | tail -1)
+            echo "  $line"
+            pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
           done
-          echo "this job shell priority: $(ps -o pri,nice,comm -p $$ | tail -1)"
+          echo "--- launchd services (bitrise/runner/actions) ---"
+          sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise'
+          for lbl in $(sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise' | awk '{print $3}'); do
+            echo "  print system/$lbl:"; sudo launchctl print "system/$lbl" 2>/dev/null | grep -iE 'nice|priority|qos|processtype|iopolicy|throttl|darwinbg|lowpriority' | sed 's/^/    /'
+          done
           echo "::endgroup::"
-          echo "taskpolicy usage:"; taskpolicy 2>&1 | head -8 || true
 
-      - name: Install ipsw
+      - name: Install ipsw + symsorter
         run: |
           set -euo pipefail
           V="${{ inputs.ipsw_version }}"
           curl -LsSf --retry 6 --retry-delay 10 --retry-all-errors \
             "https://github.com/blacktop/ipsw/releases/download/v${V}/ipsw_${V}_macOS_universal.tar.gz" -o /tmp/ipsw.tgz
           sudo tar -xzf /tmp/ipsw.tgz -C /usr/local/bin ipsw && sudo chmod +x /usr/local/bin/ipsw
-          ipsw version
+          curl -LsSf --retry 6 --retry-all-errors https://github.com/getsentry/symbolicator/releases/latest/download/symsorter-Darwin-universal -o /tmp/symsorter
+          sudo install -m 0755 /tmp/symsorter /usr/local/bin/symsorter
+          ipsw version; symsorter --version
 
       - name: Download public macOS IPSW (excluded from timings)
         run: |
@@ -60,103 +61,47 @@ jobs:
           ipsw download ipsw --device VirtualMac2,1 --version "${{ inputs.mac_version }}" --confirm --output "$HOME/repro"
           ls -lh "$HOME/repro"/*.ipsw
 
-      - name: Run N extracts (expose variance; auto-spindump any slow run)
+      - name: "FAITHFUL repro — ipsw mount sys + symsorter (symx's slow step)"
         run: |
-          set -uo pipefail
+          set +e   # tolerate non-zero so a sub-step can't SIGTERM the job
           MAC=$(ls "$HOME/repro"/UniversalMac_*.ipsw | head -1)
-          N=${{ inputs.iterations }}
-          SLOW=40           # seconds; above this we treat the run as "slow" and keep the spindump
-          CONT="${{ inputs.induce_contention }}"
+          MP=/tmp/sys_mount; rm -rf "$MP" /tmp/symbols; mkdir -p "$MP" /tmp/symbols
 
-          contention_on() {
-            [ "$CONT" = "true" ] || return 0
-            echo "  (inducing disk-I/O contention: parallel readers)"
-            for n in 1 2 3 4; do
-              ( while :; do dd if="$MAC" of=/dev/null bs=1m 2>/dev/null; done ) &
-              echo $! >> /tmp/hogs
-            done
-          }
-          contention_off() { [ -f /tmp/hogs ] && { while read h; do kill "$h" 2>/dev/null; done < /tmp/hogs; rm -f /tmp/hogs; }; }
-
-          contention_on
-          echo "iter | seconds | exit | spindump"
-          for i in $(seq 1 "$N"); do
-            OUT="$HOME/repro/out$i"; rm -rf "$OUT"; mkdir -p "$OUT"
-            SP="/tmp/spindump_$i.txt"; rm -f "$SP"
-            sudo ipsw extract --dyld --dyld-arch arm64e "$MAC" --output "$OUT" >/tmp/ex_$i.log 2>&1 &
-            epid=$!
-            # watchdog: if this extract is still going at 20s, grab a whole-system spindump
-            ( sleep 20; kill -0 "$epid" 2>/dev/null && sudo spindump 20 -noProcessingWhileSampling -file "$SP" >/dev/null 2>&1 ) &
-            wpid=$!
-            t0=$(date +%s); wait "$epid"; rc=$?; t1=$(date +%s); dur=$((t1-t0))
-            kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
-            note=""
-            if [ "$dur" -ge "$SLOW" ] && [ -f "$SP" ]; then
-              note="SLOW — spindump kept (throttle matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' "$SP"))"
-            else
-              rm -f "$SP"; note="fast"
-            fi
-            printf "  %d   | %5ds  | %d    | %s\n" "$i" "$dur" "$rc" "$note"
-          done
-          contention_off
-
-          echo "::group::throttle evidence from any SLOW run"
-          for SP in /tmp/spindump_*.txt; do
-            [ -f "$SP" ] || continue
-            echo "===== $SP ====="
-            echo "throttle-frame matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' "$SP")"
-            grep -n -i -E 'throttle_lowpri_io|_throttle_io|diskimagesiod|mount_apfs' "$SP" | head -20
-          done
-          ls /tmp/spindump_*.txt >/dev/null 2>&1 || echo "(no slow run captured this dispatch — re-run, or set induce_contention=true)"
-          echo "::endgroup::"
-
-      - name: "Repro the ACTUAL symx mount (ipsw mount sys + whole-volume read)"
-        run: |
-          set -uo pipefail
-          MAC=$(ls "$HOME/repro"/UniversalMac_*.ipsw | head -1)
-          MP=/tmp/sys_mount; rm -rf "$MP"; mkdir -p "$MP"
-
-          echo ">>> ipsw mount sys  (this is symx's 'IPSW mount' step)…"
+          echo ">>> ipsw mount sys  (symx 'IPSW mount')…"
           sudo ipsw mount sys "$MAC" -V --mount-point "$MP" >/tmp/mount.log 2>&1 &
           mpid=$!
-          # arm a spindump in case the MOUNT itself drags
-          ( sleep 20; kill -0 "$mpid" 2>/dev/null && sudo spindump 15 -noProcessingWhileSampling -file /tmp/mount-spindump.txt >/dev/null 2>&1 ) &
           t0=$(date +%s); ready=""
           for i in $(seq 1 600); do grep -qiE 'Mounted|Press Ctrl' /tmp/mount.log 2>/dev/null && { ready=1; break; }; sleep 1; done
           t1=$(date +%s)
-          echo "RESULT ipsw mount sys ready: $((t1-t0))s   [healthy ≈ 12-20s]"
-          sed 's/^/  mount.log> /' /tmp/mount.log | tail -3
-          MOUNT=$(grep -oE "/(private/)?tmp/[^ ']*\.mount|$MP" /tmp/mount.log | head -1); MOUNT="${MOUNT:-$MP}"
+          echo "RESULT  ipsw mount sys ready: $((t1-t0))s   [healthy ≈ 12-20s]"
+          tail -2 /tmp/mount.log | sed 's/^/  mount> /'
+          MOUNT=$(grep -oE "/(private/)?tmp/[^ ']*\.mount" /tmp/mount.log | head -1); MOUNT="${MOUNT:-$MP}"
 
           if [ -n "$ready" ]; then
-            echo ">>> reading the WHOLE mounted volume (what symsorter does — the visionOS 8-min hang)…"
-            ( sleep 20; sudo spindump 20 -noProcessingWhileSampling -file /tmp/read-spindump.txt >/dev/null 2>&1 ) &
+            echo ">>> symsorter over the mounted volume (the visionOS-style read)…"
+            symsorter -zz -o /tmp/symbols --prefix macos --bundle-id repro --ignore-errors "$MOUNT" >/tmp/symsort.log 2>&1 &
             spid=$!
-            t0=$(date +%s)
-            sudo find "$MOUNT" -type f -print0 2>/dev/null | sudo xargs -0 -n 64 cat 2>/dev/null >/dev/null
-            t1=$(date +%s); kill "$spid" 2>/dev/null
-            echo "RESULT whole-volume read: $((t1-t0))s"
+            # TARGETED spindump of symsorter once it's been running ~20s (NOT whole-system)
+            ( sleep 20; kill -0 "$spid" 2>/dev/null && sudo spindump "$spid" 10 -noProcessingWhileSampling -file /tmp/symsorter-spindump.txt >/dev/null 2>&1 ) &
+            t0=$(date +%s); wait "$spid"; t1=$(date +%s)
+            echo "RESULT  symsorter read: $((t1-t0))s"
           fi
-          # teardown (symx-style: SIGINT then SIGKILL)
+          # teardown (symx-style)
           sudo kill -INT "$mpid" 2>/dev/null; sleep 3; kill -0 "$mpid" 2>/dev/null && sudo kill -9 "$mpid" 2>/dev/null
-          wait 2>/dev/null || true
 
-          echo "::group::throttle frames (mount + read)"
-          for f in /tmp/mount-spindump.txt /tmp/read-spindump.txt; do
-            [ -f "$f" ] || continue
-            echo "$f  throttle matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' "$f")"
-            grep -n -i -E 'throttle_lowpri_io|_throttle_io|diskimagesiod|mount_apfs|symsorter' "$f" | head -15
-          done
+          echo "::group::symsorter spindump — throttle / blocked-state check"
+          if [ -f /tmp/symsorter-spindump.txt ]; then
+            echo "throttle-frame matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' /tmp/symsorter-spindump.txt)"
+            grep -n -i -E 'throttle_lowpri_io|_throttle_io|vn_read|cluster_read|apfs|spec_read|read ' /tmp/symsorter-spindump.txt | head -25
+          else
+            echo "(symsorter finished before 20s — fast run this time; re-run for a slow one)"
+          fi
           echo "::endgroup::"
 
       - name: Summary
         if: ${{ always() }}
         run: |
-          echo "Interpretation:"
-          echo " - fast (~11s) and slow (~140s) runs from the SAME job/pool => INTERMITTENT, contention-driven."
-          echo " - that is the signature of macOS I/O throttling (only bites under disk contention) on a"
-          echo "   job whose process tree inherited a background/low I/O QoS from the runner service."
-          echo " - a captured spindump with throttle_lowpri_io frames confirms the mechanism."
-          echo " - set induce_contention=true to force the slow path; check the Environment step for the"
-          echo "   runner service's launchd QoS/ProcessType (the thing to change to fix it)."
-
+          echo "Read the two RESULT lines + the symsorter spindump."
+          echo " - mount-ready and/or symsorter-read in the minutes (vs ~15-50s healthy) = reproduced."
+          echo " - symsorter blocked in *_throttle_io / cluster_read with CPU idle = I/O throttling."
+          echo " - Environment step shows the runner's parent chain — the QoS source to fix."
