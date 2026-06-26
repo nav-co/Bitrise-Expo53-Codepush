@@ -1,4 +1,4 @@
-name: symx 2 visionOS mount/symsort hang probe
+name: symx visionOS mount/symsort hang probe
 
 # Focused probe of the ONE symptom: visionOS `ipsw mount sys` + symsorter over the
 # mounted volume runs very slowly AND the mount won't terminate on SIGINT.
@@ -23,7 +23,7 @@ permissions:
 jobs:
   vis-probe:
     name: visionOS hang probe
-    runs-on:
+    runs-on: 
       labels: [bitrise_pool_name:Bitrise-M4Pro, machine_debug_type:enabled]
     steps:
       - name: Environment
@@ -79,20 +79,25 @@ jobs:
           MIP=$(pgrep -f 'ipsw mount sys' | head -1)   # the real ipsw pid (not the sudo wrapper)
           echo "  mount point: $MOUNT   ipsw mount pid: ${MIP:-?}"
 
-          # run_symsort <label> <outdir> <prefix-cmd> : time symsort, spindump it mid-run,
-          # log progress, report file count. Sets DUR_<label>.
+          # run_symsort <label> <outdir> : time symsort, spindump it mid-run, log progress
+          # AND log which mounted file it has open over time (to catch the stall object).
           run_symsort() {
-            local label="$1" out="$2" pre="$3"
+            local label="$1" out="$2"
             rm -rf "$out"; mkdir -p "$out"
-            echo ">>> SYMSORT [$label]  (prefix: ${pre:-none})"
-            $pre symsorter -zz -o "$out" --prefix visionos --bundle-id repro --ignore-errors "$MOUNT" >"$L/symsort_$label.log" 2>&1 &
+            echo ">>> SYMSORT [$label]"
+            symsorter -zz -o "$out" --prefix visionos --bundle-id repro --ignore-errors "$MOUNT" >"$L/symsort_$label.log" 2>&1 &
             local sp=$!
             # spindumps of symsorter (check for throttle_lowpri_io)
             ( n=0; while kill -0 "$sp" 2>/dev/null; do sleep 25; kill -0 "$sp" 2>/dev/null || break; n=$((n+1))
                 sudo spindump "$sp" 8 -noProcessingWhileSampling -file "$L/${label}_$n.spindump" >/dev/null 2>&1; done ) &
             local sampler=$!
-            # progress (climbing vs frozen)
-            ( while kill -0 "$sp" 2>/dev/null; do echo "[$(date '+%H:%M:%S')] [$label] files: $(find "$out" -type f 2>/dev/null | wc -l | xargs)"; sleep 10; done ) >>"$L/progress.log" 2>&1 &
+            # progress + the file(s) symsorter currently has open under the mount
+            ( while kill -0 "$sp" 2>/dev/null; do
+                nf=$(find "$out" -type f 2>/dev/null | wc -l | xargs)
+                cur=$(lsof -p "$sp" 2>/dev/null | awk '/vis_mount/{print $NF}' | tail -2 | tr '\n' ' ')
+                echo "[$(date '+%H:%M:%S')] [$label] files=$nf  open:${cur:- -}"
+                sleep 5
+              done ) >>"$L/progress.log" 2>&1 &
             ( sleep "$MAX"; kill -0 "$sp" 2>/dev/null && { echo "!! MAX ${MAX}s — killing [$label]"; sudo kill -9 "$sp"; } ) &
             local t0=$(date +%s); wait "$sp"; local t1=$(date +%s)
             kill "$sampler" 2>/dev/null
@@ -100,23 +105,35 @@ jobs:
             echo "RESULT  symsort [$label]: $((t1-t0))s, $(find "$out" -type f 2>/dev/null | wc -l | xargs) files"
           }
 
-          # ===== PHASE 2: symsort THROTTLED (as-is) vs UN-THROTTLED (taskpolicy -d default) =====
+          # ===== PHASE 2: throttle ON (as-is) vs throttle OFF (kernel knob) =====
+          # debug.lowpri_throttle_enabled is the system-wide low-priority I/O throttle.
           if [ -n "$ready" ]; then
-            echo ">>> PHASE 2a: symsort as-is (inherits the runner's I/O policy)"
-            run_symsort throttled "$SYMS/a" ""
+            ORIG=$(sysctl -n debug.lowpri_throttle_enabled 2>/dev/null)
+            echo "debug.lowpri_throttle_enabled (original) = ${ORIG:-<unavailable>}"
 
-            echo ">>> dropping file cache so the second run is a fair cold comparison"
+            echo ">>> PHASE 2a: throttle ON (default)"
+            sudo sysctl -w debug.lowpri_throttle_enabled=1 >/dev/null 2>&1
+            run_symsort throttleON "$SYMS/a"
+
+            echo ">>> dropping file cache for a fair cold second run"
             sudo purge 2>/dev/null || true; sleep 2
 
-            echo ">>> PHASE 2b: symsort with the disk I/O throttle cleared"
-            # try to clear the low-pri I/O throttle; -d default = normal disk policy
-            if taskpolicy -d default true >/dev/null 2>&1; then TP="taskpolicy -d default"
-            elif sudo taskpolicy -d default true >/dev/null 2>&1; then TP="sudo taskpolicy -d default"
-            else TP=""; echo "  (taskpolicy -d not accepted; running plain — un-throttle test inconclusive)"; fi
-            run_symsort unthrottled "$SYMS/b" "$TP"
+            echo ">>> PHASE 2b: throttle OFF (sudo sysctl -w debug.lowpri_throttle_enabled=0)"
+            if sudo sysctl -w debug.lowpri_throttle_enabled=0 >/dev/null 2>&1 && [ "$(sysctl -n debug.lowpri_throttle_enabled 2>/dev/null)" = "0" ]; then
+              echo "  throttle disabled OK"
+            else
+              echo "  !! could not disable throttle (knob missing) — 2b inconclusive"
+            fi
+            run_symsort throttleOFF "$SYMS/b"
+            # restore
+            [ -n "$ORIG" ] && sudo sysctl -w debug.lowpri_throttle_enabled="$ORIG" >/dev/null 2>&1
 
-            echo ">>> COMPARISON: throttled=${DUR_throttled:-?}s  unthrottled=${DUR_unthrottled:-?}s"
-            echo "    (if unthrottled is much faster AND its spindumps have 0 throttle frames → throttling is the cause)"
+            echo ">>> COMPARISON: throttle ON=${DUR_throttleON:-?}s   throttle OFF=${DUR_throttleOFF:-?}s"
+            echo "    (OFF much faster + 0 throttle frames in its spindumps => throttling is the cause;"
+            echo "     OFF still stalls at the same file => it's a slow-to-read object, not the throttle)"
+            echo "::group::biggest files on the mounted volume (is there a pathological one?)"
+            sudo find "$MOUNT" -type f -size +100M -exec ls -lh {} \; 2>/dev/null | sort -k5 -rh | head -20
+            echo "::endgroup::"
           fi
 
           # ===== PHASE 3: teardown — does the mount terminate on SIGINT? =====
