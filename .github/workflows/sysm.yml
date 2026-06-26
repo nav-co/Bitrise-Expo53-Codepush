@@ -27,10 +27,6 @@ jobs:
       labels: [bitrise_pool_name:Bitrise-M4Pro, machine_debug_type:enabled]
     steps:
 
-      - name: Disable low-priority I/O throttling (workaround for slow IPSW mount/symsort)
-        run: |
-          sudo sysctl -w debug.lowpri_throttle_enabled=0
-          echo "lowpri_throttle_enabled=$(sysctl -n debug.lowpri_throttle_enabled)"
       - name: Environment
         run: |
           echo "runner=$(hostname) os=$(sw_vers -productVersion) cores=$(sysctl -n hw.ncpu) mem=$(( $(sysctl -n hw.memsize)/1024/1024/1024 ))GB model=$(sysctl -n hw.model)"
