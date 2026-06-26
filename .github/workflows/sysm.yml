@@ -1,107 +1,149 @@
-name: symx I/O throttle repro
+name: symx visionOS mount/symsort hang probe
 
-# Faithful reproduction of symx's SLOW step, run as a GHA job (inherits the runner
-# service's I/O policy). Prior runs showed: in-job timing is intermittent (11s vs
-# 141s) and `ipsw extract --dyld` is CPU-bound on AEA decrypt — NOT symx's slow path.
-# symx's actual slow step is `ipsw mount sys` + symsorter reading the whole mounted
-# volume (symsorter sat in uninterruptible I/O wait, CPU idle). So THIS reproduces
-# that exact pair and samples the stuck symsorter.
+# Focused probe of the ONE symptom: visionOS `ipsw mount sys` + symsorter over the
+# mounted volume runs very slowly AND the mount won't terminate on SIGINT.
+# Runs as a GHA job (inherits the runner I/O policy). No Sentry secrets — pulls the
+# public visionOS beta from AppleDB. Heavily instrumented; targeted spindumps only
+# (a whole-system spindump suspends the runner agent and SIGTERMs the job).
 #
-# IMPORTANT: only ever spindump a SPECIFIC pid — a whole-system spindump suspends
-# the runner agent and gets the job SIGTERM'd (exit 143). No Sentry secrets / GCS.
+# Set `pool` to whichever runner you want to test (tahoe-xl = M4 half, or your
+# M2-full / M4-full pool). Run it on each to compare.
 
 on:
   workflow_dispatch:
     inputs:
-      mac_version: { description: "macOS IPSW version", type: string, default: "26.5" }
-      ipsw_version: { description: "blacktop ipsw version", type: string, default: "3.1.685" }
+      pool:          { description: "bitrise pool name", type: string, default: "tahoe-xl" }
+      vis_build:     { description: "visionOS build (AppleDB)", type: string, default: "23O5728e" }
+      ipsw_version:  { description: "blacktop ipsw version", type: string, default: "3.1.685" }
+      max_symsort_s: { description: "kill symsort after N seconds (safety)", type: string, default: "900" }
 
 permissions:
   contents: read
 
 jobs:
-  throttle-repro:
-    name: symx throttle repro (tahoe-xl)
+  vis-probe:
+    name: visionOS hang probe
     runs-on:
       labels: [bitrise_pool_name:Bitrise-M4Pro, machine_debug_type:enabled]
     steps:
-      - name: Environment + who launched the runner (QoS source)
+      - name: Environment
         run: |
-          set +e
-          echo "runner=$(hostname) os=$(sw_vers -productVersion) cores=$(sysctl -n hw.ncpu) mem=$(( $(sysctl -n hw.memsize)/1024/1024 ))MiB model=$(sysctl -n hw.model)"
-          echo "::group::runner process parent chain (QoS is inherited down this chain)"
-          pid=$(pgrep -f 'Runner.Listener run' | head -1)
-          while [ -n "$pid" ] && [ "$pid" != 1 ]; do
-            line=$(ps -o pid,ppid,pri,nice,comm -p "$pid" | tail -1)
-            echo "  $line"
-            pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
-          done
-          echo "--- launchd services (bitrise/runner/actions) ---"
-          sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise'
-          for lbl in $(sudo launchctl list 2>/dev/null | grep -iE 'runner|action|bitrise' | awk '{print $3}'); do
-            echo "  print system/$lbl:"; sudo launchctl print "system/$lbl" 2>/dev/null | grep -iE 'nice|priority|qos|processtype|iopolicy|throttl|darwinbg|lowpriority' | sed 's/^/    /'
-          done
-          echo "::endgroup::"
+          echo "runner=$(hostname) os=$(sw_vers -productVersion) cores=$(sysctl -n hw.ncpu) mem=$(( $(sysctl -n hw.memsize)/1024/1024/1024 ))GB model=$(sysctl -n hw.model)"
 
       - name: Install ipsw + symsorter
         run: |
           set -euo pipefail
           V="${{ inputs.ipsw_version }}"
-          curl -LsSf --retry 6 --retry-delay 10 --retry-all-errors \
-            "https://github.com/blacktop/ipsw/releases/download/v${V}/ipsw_${V}_macOS_universal.tar.gz" -o /tmp/ipsw.tgz
+          curl -LsSf --retry 6 --retry-delay 10 --retry-all-errors "https://github.com/blacktop/ipsw/releases/download/v${V}/ipsw_${V}_macOS_universal.tar.gz" -o /tmp/ipsw.tgz
           sudo tar -xzf /tmp/ipsw.tgz -C /usr/local/bin ipsw && sudo chmod +x /usr/local/bin/ipsw
           curl -LsSf --retry 6 --retry-all-errors https://github.com/getsentry/symbolicator/releases/latest/download/symsorter-Darwin-universal -o /tmp/symsorter
           sudo install -m 0755 /tmp/symsorter /usr/local/bin/symsorter
           ipsw version; symsorter --version
 
-      - name: Download public macOS IPSW (excluded from timings)
+      - name: Download visionOS IPSW (excluded from timings)
         run: |
           set -euo pipefail
           mkdir -p "$HOME/repro"
-          ipsw download ipsw --device VirtualMac2,1 --version "${{ inputs.mac_version }}" --confirm --output "$HOME/repro"
+          ipsw download appledb --os visionOS --device RealityDevice14,1 --build "${{ inputs.vis_build }}" --confirm --output "$HOME/repro"
           ls -lh "$HOME/repro"/*.ipsw
 
-      - name: "FAITHFUL repro — ipsw mount sys + symsorter (symx's slow step)"
+      - name: Mount + symsort + teardown (instrumented)
         run: |
-          set +e   # tolerate non-zero so a sub-step can't SIGTERM the job
-          MAC=$(ls "$HOME/repro"/UniversalMac_*.ipsw | head -1)
-          MP=/tmp/sys_mount; rm -rf "$MP" /tmp/symbols; mkdir -p "$MP" /tmp/symbols
+          set +e
+          VIS=$(ls "$HOME/repro"/*.ipsw | head -1)
+          MP=/tmp/vis_mount; SYMS=/tmp/vis_symbols; L=/tmp/probe
+          rm -rf "$MP" "$SYMS" "$L"; mkdir -p "$MP" "$SYMS" "$L"
+          MAX=${{ inputs.max_symsort_s }}
 
-          echo ">>> ipsw mount sys  (symx 'IPSW mount')…"
-          sudo ipsw mount sys "$MAC" -V --mount-point "$MP" >/tmp/mount.log 2>&1 &
-          mpid=$!
+          # ---- background telemetry: process STATE + cpu idle every 2s ----
+          ( while :; do
+              ts=$(date '+%H:%M:%S')
+              idle=$(top -l1 -n0 2>/dev/null | awk -F'[, ]+' '/CPU usage/{for(i=1;i<=NF;i++) if($i=="idle") print $(i-1)}')
+              echo "[$ts] cpu_idle=${idle} attached_images=$(hdiutil info 2>/dev/null | grep -c image-path)"
+              ps -axo pid,stat,%cpu,time,command 2>/dev/null | grep -iE '[i]psw mount|[s]ymsorter|[m]ount_apfs|[d]iskimages' | sed 's/^/    /'
+              sleep 2
+            done ) >"$L/state.log" 2>&1 & MON=$!
+
+          # ---- background: raw device throughput ----
+          ( iostat -d -w 2 ) >"$L/iostat.log" 2>&1 & IOS=$!
+
+          # ===== PHASE 1: ipsw mount sys =====
+          echo ">>> PHASE 1: ipsw mount sys"
+          sudo ipsw mount sys "$VIS" -V --mount-point "$MP" >"$L/mount.log" 2>&1 & SUDO_MP=$!
           t0=$(date +%s); ready=""
-          for i in $(seq 1 600); do grep -qiE 'Mounted|Press Ctrl' /tmp/mount.log 2>/dev/null && { ready=1; break; }; sleep 1; done
+          for i in $(seq 1 600); do grep -qiE 'Mounted|Press Ctrl' "$L/mount.log" 2>/dev/null && { ready=1; break; }; sleep 1; done
           t1=$(date +%s)
-          echo "RESULT  ipsw mount sys ready: $((t1-t0))s   [healthy ≈ 12-20s]"
-          tail -2 /tmp/mount.log | sed 's/^/  mount> /'
-          MOUNT=$(grep -oE "/(private/)?tmp/[^ ']*\.mount" /tmp/mount.log | head -1); MOUNT="${MOUNT:-$MP}"
+          echo "RESULT  mount-ready: $((t1-t0))s (ready=${ready:-NO})"
+          tail -3 "$L/mount.log" | sed 's/^/  mount> /'
+          MOUNT=$(grep -oE "/(private/)?tmp/[^ ']*\.mount|$MP" "$L/mount.log" | head -1); MOUNT="${MOUNT:-$MP}"
+          MIP=$(pgrep -f 'ipsw mount sys' | head -1)   # the real ipsw pid (not the sudo wrapper)
+          echo "  mount point: $MOUNT   ipsw mount pid: ${MIP:-?}"
 
+          # ===== PHASE 2: symsorter over the mounted volume (the slow/hung step) =====
           if [ -n "$ready" ]; then
-            echo ">>> symsorter over the mounted volume (the visionOS-style read)…"
-            symsorter -zz -o /tmp/symbols --prefix macos --bundle-id repro --ignore-errors "$MOUNT" >/tmp/symsort.log 2>&1 &
-            spid=$!
-            # TARGETED spindump of symsorter once it's been running ~20s (NOT whole-system)
-            ( sleep 20; kill -0 "$spid" 2>/dev/null && sudo spindump "$spid" 10 -noProcessingWhileSampling -file /tmp/symsorter-spindump.txt >/dev/null 2>&1 ) &
-            t0=$(date +%s); wait "$spid"; t1=$(date +%s)
-            echo "RESULT  symsorter read: $((t1-t0))s"
-          fi
-          # teardown (symx-style)
-          sudo kill -INT "$mpid" 2>/dev/null; sleep 3; kill -0 "$mpid" 2>/dev/null && sudo kill -9 "$mpid" 2>/dev/null
+            echo ">>> PHASE 2: symsorter over $MOUNT"
+            symsorter -zz -o "$SYMS" --prefix visionos --bundle-id repro --ignore-errors "$MOUNT" >"$L/symsort.log" 2>&1 & SPID=$!
 
-          echo "::group::symsorter spindump — throttle / blocked-state check"
-          if [ -f /tmp/symsorter-spindump.txt ]; then
-            echo "throttle-frame matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' /tmp/symsorter-spindump.txt)"
-            grep -n -i -E 'throttle_lowpri_io|_throttle_io|vn_read|cluster_read|apfs|spec_read|read ' /tmp/symsorter-spindump.txt | head -25
-          else
-            echo "(symsorter finished before 20s — fast run this time; re-run for a slow one)"
+            # periodic TARGETED spindumps: symsorter + the diskimages daemon serving its reads
+            ( n=0; while kill -0 "$SPID" 2>/dev/null; do
+                sleep 25; kill -0 "$SPID" 2>/dev/null || break; n=$((n+1))
+                sudo spindump "$SPID" 8 -noProcessingWhileSampling -file "$L/symsorter_$n.spindump" >/dev/null 2>&1
+                d=$(pgrep -x diskimagesiod | head -1); [ -n "$d" ] && sudo spindump "$d" 5 -file "$L/diskimagesiod_$n.spindump" >/dev/null 2>&1
+              done ) & SAMP=$!
+
+            # one fs_usage window (~20s) — shows the actual read syscalls + their latency
+            ( sleep 12; sudo fs_usage -w -f filesys symsorter diskimagesiod > "$L/fsusage.log" 2>&1 & fp=$!; sleep 20; sudo kill "$fp" 2>/dev/null ) &
+
+            # progress: is symsorter making slow progress, or frozen?
+            ( while kill -0 "$SPID" 2>/dev/null; do echo "[$(date '+%H:%M:%S')] symbol files so far: $(find "$SYMS" -type f 2>/dev/null | wc -l | xargs)"; sleep 10; done ) >"$L/progress.log" 2>&1 &
+
+            # safety: kill symsort if it exceeds MAX
+            ( sleep "$MAX"; kill -0 "$SPID" 2>/dev/null && { echo "!! MAX ${MAX}s reached — killing symsorter"; sudo kill -9 "$SPID"; } ) &
+
+            t0=$(date +%s); wait "$SPID"; t1=$(date +%s)
+            echo "RESULT  symsort: $((t1-t0))s, produced $(find "$SYMS" -type f 2>/dev/null | wc -l | xargs) files"
+            kill "$SAMP" 2>/dev/null
           fi
-          echo "::endgroup::"
+
+          # ===== PHASE 3: teardown — does the mount terminate on SIGINT? =====
+          echo ">>> PHASE 3: teardown (SIGINT the ipsw mount, watch for clean exit)"
+          t0=$(date +%s); exited=""
+          [ -n "$MIP" ] && sudo kill -INT "$MIP" 2>/dev/null
+          for i in $(seq 1 90); do { [ -n "$MIP" ] && kill -0 "$MIP" 2>/dev/null; } || { exited=1; break; }; sleep 1; done
+          t1=$(date +%s)
+          if [ -n "$exited" ]; then
+            echo "RESULT  mount exited cleanly on SIGINT in $((t1-t0))s"
+          else
+            echo "RESULT  mount DID NOT terminate after SIGINT in $((t1-t0))s — capturing where it's stuck, then SIGKILL"
+            sudo spindump "$MIP" 10 -noProcessingWhileSampling -file "$L/mount_teardown.spindump" >/dev/null 2>&1
+            d=$(pgrep -x diskimagesiod | head -1); [ -n "$d" ] && sudo spindump "$d" 8 -file "$L/diskimagesiod_teardown.spindump" >/dev/null 2>&1
+            sudo kill -9 "$MIP" 2>/dev/null
+          fi
+          echo "  attached images after teardown: $(hdiutil info 2>/dev/null | grep -c image-path)"
+          ls -la /tmp/*.dmg /tmp/*.dmg.mount 2>/dev/null | sed 's/^/  residue: /'
+          kill "$MON" "$IOS" 2>/dev/null
+
+          # ===== dump all captures into the job log =====
+          echo "::group::state timeline (cpu_idle + ipsw/symsorter/mount_apfs/diskimages STATE)"; cat "$L/state.log"; echo "::endgroup::"
+          echo "::group::symsort progress (file count over time — climbing=slow, flat=stalled)"; cat "$L/progress.log" 2>/dev/null; echo "::endgroup::"
+          echo "::group::iostat (device read/write throughput)"; tail -80 "$L/iostat.log" 2>/dev/null; echo "::endgroup::"
+          echo "::group::fs_usage sample (read syscalls + latency on symsorter/diskimagesiod)"; head -250 "$L/fsusage.log" 2>/dev/null; echo "::endgroup::"
+          for f in "$L"/*.spindump; do [ -f "$f" ] || continue
+            echo "::group::spindump $(basename "$f")"
+            echo "throttle-frame matches: $(grep -ic -E 'throttle_lowpri_io|_throttle_io' "$f")"
+            echo "--- blocked/IO frames ---"
+            grep -n -iE 'throttle_lowpri_io|_throttle_io|cluster_read|vn_read|spec_read|apfs|biowait|msleep|VNOP|DKIOC|read ' "$f" | head -25
+            echo "--- stack head ---"; sed -n '1,55p' "$f"
+            echo "::endgroup::"
+          done
 
       - name: Summary
         if: ${{ always() }}
         run: |
-          echo "Read the two RESULT lines + the symsorter spindump."
-          echo " - mount-ready and/or symsorter-read in the minutes (vs ~15-50s healthy) = reproduced."
-          echo " - symsorter blocked in *_throttle_io / cluster_read with CPU idle = I/O throttling."
-          echo " - Environment step shows the runner's parent chain — the QoS source to fix."
+          echo "What to read:"
+          echo " - RESULT lines: mount-ready / symsort / teardown timings."
+          echo " - state timeline: symsorter & diskimagesiod STATE — U = blocked on I/O (CPU idle)."
+          echo " - progress: file count climbing slowly = throttled I/O; frozen = a real stall/deadlock."
+          echo " - fs_usage: are reads happening (slowly) and how long each takes?"
+          echo " - iostat: is the device actually moving bytes, or idle while symsorter waits?"
+          echo " - mount_teardown.spindump: WHERE ipsw mount is stuck when it won't exit on SIGINT."
