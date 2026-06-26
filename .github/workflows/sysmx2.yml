@@ -1,4 +1,4 @@
-name: symx visionOS mount/symsort hang probe
+name: symx 2 visionOS mount/symsort hang probe
 
 # Focused probe of the ONE symptom: visionOS `ipsw mount sys` + symsorter over the
 # mounted volume runs very slowly AND the mount won't terminate on SIGINT.
