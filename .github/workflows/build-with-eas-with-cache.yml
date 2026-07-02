@@ -57,7 +57,7 @@ jobs:
       # 3. Restore npm cache
       # ---------------------------------------------------------------
       - name: Restore npm cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         if: ${{ github.event.inputs.git_clean == 'true'}}
         with:
           path: ~/.npm
