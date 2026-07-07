@@ -16,9 +16,12 @@ jobs:
           set -euxo pipefail
           curl --retry 5 -sSfL 'https://raw.githubusercontent.com/bitrise-io/bitrise-build-cache-cli/main/install/installer.sh' | sh -s -- -b /tmp/bin -d
 
-      - name: Verify auth
+      - name: Show which credentials are resolved
         run: |
           set -euo pipefail
-          /tmp/bin/bitrise-build-cache --version
-          # Primary check:
-          /tmp/bin/bitrise-build-cache verify-auth --debug
+          /tmp/bin/bitrise-build-cache auth status --debug
+
+      - name: Probe backend auth (the real check)
+        run: |
+          set -euo pipefail
+          /tmp/bin/bitrise-build-cache doctor --debug
