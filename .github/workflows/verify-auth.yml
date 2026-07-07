@@ -1,0 +1,24 @@
+name: Verify Bitrise Build Cache Auth
+
+on:
+  workflow_dispatch:   # run it manually from the Actions tab
+
+jobs:
+  verify-auth:
+    runs-on:
+      labels: [bitrise_pool_name:Bitrise-M4Pro, machine_debug_type:enabled]
+    env:
+      BITRISE_BUILD_CACHE_AUTH_TOKEN: ${{ secrets.BITRISE_PAT_TEMP }}
+      BITRISE_BUILD_CACHE_WORKSPACE_ID: 3dd3238b86218959
+    steps:
+      - name: Install Bitrise Build Cache CLI
+        run: |
+          set -euxo pipefail
+          curl --retry 5 -sSfL 'https://raw.githubusercontent.com/bitrise-io/bitrise-build-cache-cli/main/install/installer.sh' | sh -s -- -b /tmp/bin -d
+
+      - name: Verify auth
+        run: |
+          set -euo pipefail
+          /tmp/bin/bitrise-build-cache --version
+          # Primary check:
+          /tmp/bin/bitrise-build-cache verify-auth --debug
