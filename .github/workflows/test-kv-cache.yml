@@ -1,0 +1,19 @@
+name: Print cache env
+
+on:
+  workflow_dispatch:   # run manually from the Actions tab
+  push:                # or on push, so it runs on the same runner as the failing job
+
+jobs:
+  print-cache-env:
+    runs-on:
+      group: Bitrise-M4Pro  # <-- must be the Bitrise-forked runner; a GitHub-hosted runner points these at GitHub, not the Bitrise proxy
+    steps:
+      - name: Print ACTIONS_RESULTS_URL (and related cache env)
+        run: |
+          echo "ACTIONS_RESULTS_URL          = ${ACTIONS_RESULTS_URL:-<unset>}"
+          echo "ACTIONS_RESULTS_URL_ORIGINAL = ${ACTIONS_RESULTS_URL_ORIGINAL:-<unset>}"
+          echo "ACTIONS_CACHE_URL            = ${ACTIONS_CACHE_URL:-<unset>}"
+          echo "ACTIONS_CACHE_URL_ORIGINAL   = ${ACTIONS_CACHE_URL_ORIGINAL:-<unset>}"
+          echo "ACTIONS_CACHE_SERVICE_V2     = ${ACTIONS_CACHE_SERVICE_V2:-<unset>}"
+          echo "ACTIONS_RUNTIME_TOKEN set?   = $([ -n "$ACTIONS_RUNTIME_TOKEN" ] && echo yes || echo no)"
