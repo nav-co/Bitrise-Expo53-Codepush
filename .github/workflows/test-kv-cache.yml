@@ -20,12 +20,7 @@ jobs:
       - name: Check cache-proxy token expiry
         run: sudo plutil -extract EnvironmentVariables.BITRISEIO_BITRISE_SERVICES_ACCESS_TOKEN raw /Library/LaunchDaemons/github-cache-proxy.plist | python3 -c 'import sys,base64,json,time;p=sys.stdin.read().strip().split(".")[1];p+="="*(-len(p)%4);e=json.loads(base64.urlsafe_b64decode(p))["exp"];print("expires",time.strftime("%Y-%m-%d %H:%M:%S UTC",time.gmtime(e)),"| expired?",e<time.time())'
 
-      - name: Show VM boot vs build time
+      - name: Show current time and uptime
         run: |
-          if [ -r /proc/uptime ]; then BOOT=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ));
-          else BOOT=$(sysctl -n kern.boottime | sed -n 's/.*sec = \([0-9]*\).*/\1/p'); fi
-          NOW=$(date +%s)
-          fmt(){ date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date -u -r "$1" '+%Y-%m-%d %H:%M:%S UTC'; }
-          echo "VM booted : $(fmt $BOOT)"
-          echo "Build time: $(fmt $NOW)"
-          echo "VM uptime : $(( (NOW-BOOT)/3600 ))h $(( (NOW-BOOT)%3600/60 ))m"
+          echo "Now (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+          uptime
