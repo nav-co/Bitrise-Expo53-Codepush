@@ -18,6 +18,7 @@ jobs:
           echo "ACTIONS_RUNTIME_TOKEN set?   = $([ -n "$ACTIONS_RUNTIME_TOKEN" ] && echo yes || echo no)"
 
       - name: Check cache-proxy token expiry
+        if: false
         run: sudo plutil -extract EnvironmentVariables.BITRISEIO_BITRISE_SERVICES_ACCESS_TOKEN raw /Library/LaunchDaemons/github-cache-proxy.plist | python3 -c 'import sys,base64,json,time;p=sys.stdin.read().strip().split(".")[1];p+="="*(-len(p)%4);e=json.loads(base64.urlsafe_b64decode(p))["exp"];print("expires",time.strftime("%Y-%m-%d %H:%M:%S UTC",time.gmtime(e)),"| expired?",e<time.time())'
 
       - name: Show VM uptime
