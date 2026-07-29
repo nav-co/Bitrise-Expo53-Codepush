@@ -6,7 +6,7 @@ on:
 jobs:
   print-cache-env:
     runs-on:
-      group: Bitrise-M4Pro  # <-- must be the Bitrise-forked runner; a GitHub-hosted runner points these at GitHub, not the Bitrise proxy
+      group: Bitrise-Linux  # <-- must be the Bitrise-forked runner; a GitHub-hosted runner points these at GitHub, not the Bitrise proxy
     steps:
       - name: Print ACTIONS_RESULTS_URL (and related cache env)
         run: |
@@ -20,7 +20,5 @@ jobs:
       - name: Check cache-proxy token expiry
         run: sudo plutil -extract EnvironmentVariables.BITRISEIO_BITRISE_SERVICES_ACCESS_TOKEN raw /Library/LaunchDaemons/github-cache-proxy.plist | python3 -c 'import sys,base64,json,time;p=sys.stdin.read().strip().split(".")[1];p+="="*(-len(p)%4);e=json.loads(base64.urlsafe_b64decode(p))["exp"];print("expires",time.strftime("%Y-%m-%d %H:%M:%S UTC",time.gmtime(e)),"| expired?",e<time.time())'
 
-      - name: Show current time and uptime
-        run: |
-          echo "Now (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
-          uptime
+      - name: Show VM uptime
+        run: uptime
