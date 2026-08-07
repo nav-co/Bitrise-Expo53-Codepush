@@ -1,0 +1,150 @@
+name: Cache Throughput
+
+# Measures upload/download throughput of the GitHub Actions cache backed by the
+# Bitrise cache proxy -> ABCS. Results go to the job log and the run summary.
+#
+# Each matrix leg is self-contained: create an incompressible payload -> save
+# under a run-unique key (always a real upload) -> delete it locally -> restore
+# that exact key (always a real download, guaranteed hit) -> verify checksum.
+# Sizes straddle the 128MB boundary in internal/proxy so both upload paths are
+# exercised: simple PUT (<128MB) and Azure Block Blob / 64MB blocks (>=128MB).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cache-throughput
+  cancel-in-progress: false
+
+jobs:
+  throughput:
+    runs-on:
+      group: Bitrise-M4Pro
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: 1GB
+            mb: 1000
+            upload_mode: block-blob
+
+    env:
+      SIZE_LABEL: ${{ matrix.label }}
+      SIZE_MB: ${{ matrix.mb }}
+      UPLOAD_MODE: ${{ matrix.upload_mode }}
+      CACHE_KEY: cache-throughput-${{ matrix.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Set up
+        run: |
+          set -euo pipefail
+
+          # Payload lives in RUNNER_TEMP, not the workspace: self-hosted runners
+          # reuse the checkout, and a killed run would leave 1GB of junk in it.
+          echo "PAYLOAD=$RUNNER_TEMP/cache-payload.bin" >> "$GITHUB_ENV"
+
+          cat > "$RUNNER_TEMP/bench-lib.sh" <<'LIB'
+          # macOS `date` has no %3N, so use python3 for millisecond timing.
+          now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+
+          file_bytes() { wc -c < "$1" | tr -d '[:space:]'; }
+
+          checksum() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | cut -d' ' -f1
+            else
+              shasum -a 256 "$1" | cut -d' ' -f1
+            fi
+          }
+
+          # log_result <direction> <elapsed_ms> <bytes>
+          log_result() {
+            local direction="$1" elapsed_ms="$2" nbytes="$3" mbps mib
+            mbps=$(python3 -c "print(f'{($nbytes/1048576)/($elapsed_ms/1000):.2f}')")
+            mib=$(python3 -c "print(f'{$nbytes/1048576:.1f}')")
+
+            echo "cache $direction | $SIZE_LABEL ($mib MiB, $UPLOAD_MODE) | ${elapsed_ms} ms | ${mbps} MB/s"
+            echo "::notice title=cache $direction $SIZE_LABEL::${elapsed_ms} ms, ${mbps} MB/s"
+            echo "| $SIZE_LABEL | $direction | $UPLOAD_MODE | $mib | ${elapsed_ms} | ${mbps} |" \
+              >> "$GITHUB_STEP_SUMMARY"
+          }
+          LIB
+
+          {
+            echo "## Cache throughput - $SIZE_LABEL"
+            echo
+            echo "| size | direction | upload mode | MiB | elapsed (ms) | MB/s |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create ${{ matrix.label }} payload
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/bench-lib.sh"
+
+          # /dev/urandom keeps the payload incompressible, so zstd inside
+          # actions/cache is near-passthrough and the timing reflects transfer
+          # rather than compression ratio.
+          case "$(uname)" in
+            Darwin) dd if=/dev/urandom of="$PAYLOAD" bs=1m count="$SIZE_MB" ;;
+            Linux)  dd if=/dev/urandom of="$PAYLOAD" bs=1M count="$SIZE_MB" ;;
+            *) echo "Unsupported OS: $(uname)" >&2; exit 1 ;;
+          esac
+
+          echo "PAYLOAD_BYTES=$(file_bytes "$PAYLOAD")" >> "$GITHUB_ENV"
+          echo "PAYLOAD_SHA=$(checksum "$PAYLOAD")" >> "$GITHUB_ENV"
+
+      - name: Mark save start
+        run: echo "SAVE_START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')" >> "$GITHUB_ENV"
+
+      - name: Save cache
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.PAYLOAD }}
+          key: ${{ env.CACHE_KEY }}
+
+      - name: Log save throughput
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/bench-lib.sh"
+          log_result save "$(( $(now_ms) - SAVE_START_MS ))" "$PAYLOAD_BYTES"
+
+      - name: Drop local copy
+        run: rm -f "$PAYLOAD"
+
+      - name: Mark restore start
+        run: |
+          sleep 5  # let the ABCS acknowledge settle before reading back
+          echo "RESTORE_START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')" >> "$GITHUB_ENV"
+
+      - name: Restore cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.PAYLOAD }}
+          key: ${{ env.CACHE_KEY }}
+
+      - name: Log restore throughput
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/bench-lib.sh"
+          ELAPSED_MS=$(( $(now_ms) - RESTORE_START_MS ))
+
+          # A miss here means we measured a no-op, not a fast cache. Fail loudly.
+          if [ "${{ steps.cache-restore.outputs.cache-hit }}" != "true" ]; then
+            echo "::error::cache miss on $CACHE_KEY - the save never landed; no restore timing recorded"
+            exit 1
+          fi
+
+          RESTORED_SHA="$(checksum "$PAYLOAD")"
+          if [ "$RESTORED_SHA" != "$PAYLOAD_SHA" ]; then
+            echo "::error::checksum mismatch - expected $PAYLOAD_SHA got $RESTORED_SHA"
+            exit 1
+          fi
+
+          log_result restore "$ELAPSED_MS" "$(file_bytes "$PAYLOAD")"
+
+      - name: Clean up
+        if: always()
+        run: rm -f "$RUNNER_TEMP/cache-payload.bin"
