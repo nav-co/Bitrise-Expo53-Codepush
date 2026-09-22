@@ -19,7 +19,7 @@ concurrency:
 jobs:
   throughput:
     runs-on:
-      labels: bitrise_pool_name:Bitrise-M4Pro
+      labels: [bitrise_pool_name:Bitrise-M4Pro, image:osx-sequoia-26]
 
     strategy:
       fail-fast: false
