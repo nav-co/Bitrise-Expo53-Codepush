@@ -19,7 +19,7 @@ concurrency:
 jobs:
   throughput:
     runs-on:
-      group: Bitrise-M4Pro
+      labels: bitrise_pool_name:Bitrise-M4Pro
 
     strategy:
       fail-fast: false
