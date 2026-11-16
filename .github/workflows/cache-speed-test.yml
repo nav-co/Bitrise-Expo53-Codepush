@@ -18,10 +18,10 @@ concurrency:
 
 jobs:
   throughput:
-    runs-on:
+    runs-on: bitrise-runner-Bitrise-M4Pro
       #labels: [bitrise_pool_name:Bitrise-M4Pro, image:osx-tahoe-26]
       #labels: bitrise-runner-Bitrise-M4Pro-GHApp
-      labels: bitrise-runner-Bitrise-M4Pro
+      #labels: bitrise-runner-Bitrise-M4Pro
 
     strategy:
       fail-fast: false
